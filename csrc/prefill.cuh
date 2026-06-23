@@ -38,6 +38,37 @@ __global__ void prefill_kernel(
     for (int e = lane; e < 16 * d; e += 32) Acc[e] = 0.f;
     __syncthreads();
 
+    const int n_sub = BLOCK_N / 16;
+
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> q_frag;
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> k_frag;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> s_frag;
+
+    for (int kv0 = 0; kv0 < Skv; kv0 += BLOCK_N) {
+        const int tile_keys = min(BLOCK_N, Skv - kv0);
+
+        for (int e = lane; e < BLOCK_N * d; e += 32) {
+            int kr = e / d;
+            bool valid = kr < tile_keys;
+            Ks[e] = valid ? k[(size_t)(bh * Skv + kv0 + kr) * d + (e % d)] : __float2bfloat16(0.f);
+            Vs[e] = valid ? v[(size_t)(bh * Skv + kv0 + kr) * d + (e % d)] : __float2bfloat16(0.f);
+        }
+
+        __syncthreads();
+
+        for (int sub = 0; sub < n_sub; ++sub) {
+            wmma::fill_fragment(s_frag, 0.0f);
+            for (int k0 = 0; k0 < d; k0 += 16) {
+                wmma::load_matrix_sync(q_frag, Qs + k0,                d);
+                wmma::load_matrix_sync(k_frag, Ks + sub * 16 * d + k0, d);
+                wmma::mma_sync(s_frag, q_frag, k_frag, s_frag);
+            }
+            wmma::store_matrix_sync(Ss + sub * 16, s_frag, BLOCK_N, wmma::mem_row_major);
+        }
+        __syncthreads();
+
+        __syncthreads();
+    }
 }
 
 inline void prefill_tile(int& BM, int& BN) {
