@@ -67,6 +67,37 @@ __global__ void prefill_kernel(
         }
         __syncthreads();
 
+        if (lane < 16) {
+            int r = lane;
+            float* Srow = Ss + r * BLOCK_N;
+
+            float m_prev = m[r];
+            float m_cur  = m_prev;
+            for (int j = 0; j < tile_keys; ++j) {
+                float s = Srow[j] * scale;
+                m_cur = fmaxf(m_cur, s);
+            }
+
+            float alpha = expf(m_prev - m_cur);
+
+            float l_cur = l[r] * alpha;
+            for (int j = 0; j < BLOCK_N; ++j) {
+                float p = 0.f;
+                if (j < tile_keys) {
+                    p = expf(Srow[j] * scale - m_cur);
+                    l_cur += p;
+                }
+                Ps[r * BLOCK_N + j] = __float2bfloat16(p);
+            }
+
+            for (int c = 0; c < d; ++c)
+                Acc[r * d + c] *= alpha;
+
+            m[r] = m_cur;
+            l[r] = l_cur;
+
+        }
+    
         __syncthreads();
     }
 }
