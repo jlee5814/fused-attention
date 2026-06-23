@@ -100,14 +100,9 @@ inline int decode_num_splits(int bh, int Skv) {
     int v = std::atoi(e);
     if (v > 0) return v;
   }
-  const int kWarpsPerSMTarget = 24;
-  const int kNumSMs = 108;
-  const int kMinChunk = 128;
-  int by_fill = (kWarpsPerSMTarget * kNumSMs + bh - 1) / bh;
-  int cap = Skv / kMinChunk; if (cap < 1) cap = 1;
-  int n = by_fill < 1 ? 1 : by_fill;
-  if (n > cap) n = cap;
-  return n;
+  int n = 16;
+  int cap = Skv / 32; if (cap < 1) cap = 1;
+  return n > cap ? cap : n;
 }
 
 inline void launch_decode_attention(
