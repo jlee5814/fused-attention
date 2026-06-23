@@ -7,7 +7,7 @@
 #include "common.cuh"
 using namespace nvcuda;
 
-#define PREFILL_W 4
+#define PREFILL_W 6
 
 __global__ void prefill_kernel(
     const __nv_bfloat16* __restrict__ q,
