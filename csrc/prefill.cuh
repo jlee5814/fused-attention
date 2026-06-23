@@ -24,10 +24,11 @@ __global__ void prefill_kernel(
     __nv_bfloat16* Ks = Qs + 16 * d;
     __nv_bfloat16* Vs = Ks + BLOCK_N * d;
     __nv_bfloat16* Ps = Vs + BLOCK_N * d;
-    float* Ss  = (float*)(Ps + 16 * BLOCK_N);
-    float* m   = Ss + 16 * BLOCK_N;
-    float* l   = m + 16;
-    float* Acc = l + 16;
+    float* Ss   = (float*)(Ps + 16 * BLOCK_N);
+    float* m    = Ss + 16 * BLOCK_N;
+    float* l    = m + 16;
+    float* Acc  = l + 16;
+    float* Otmp = Acc + 16 * d; 
 
     for (int e = lane; e < 16 * d; e += 32) {
         int r = e / d, c = e % d, qr = q0 + r;
@@ -99,6 +100,37 @@ __global__ void prefill_kernel(
         }
     
         __syncthreads();
+
+        {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> p_frag;
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::row_major> v_frag;
+            wmma::fragment<wmma::accumulator, 16, 16, 16, float> o_frag;
+
+            for (int dt = 0; dt < d; dt += 16) {
+                wmma::fill_fragment(o_frag, 0.0f);
+                for (int kt = 0; kt < n_sub; ++kt) {
+                    wmma::load_matrix_sync(p_frag, Ps + kt * 16,        BLOCK_N);
+                    wmma::load_matrix_sync(v_frag, Vs + kt * 16 * d + dt, d);
+                    wmma::mma_sync(o_frag, p_frag, v_frag, o_frag);
+                }
+                wmma::store_matrix_sync(Otmp, o_frag, 16, wmma::mem_row_major);
+
+                __syncthreads();
+                for (int e = lane; e < 16 * 16; e += 32) {
+                    int rr = e / 16, cc = e % 16;
+                    Acc[rr * d + dt + cc] += Otmp[rr * 16 + cc];
+                }
+                __syncthreads();
+
+            }
+
+        }
+    }
+
+    for (int e = lane; e < 16 * d; e += 32) {
+        int r = e / d, c = e % d, qr = q0 + r;
+        if (qr < Sq)
+            out[(size_t)(bh * Sq + qr) * d + c] = __float2bfloat16(Acc[r * d + c] / l[r]);
     }
 }
 
@@ -115,10 +147,14 @@ inline void launch_prefill_attention(
   int BM, BN;
   prefill_tile(BM, BN);
   const int bh = B * H;
-  const int num_qtiles = (Sq + BM - 1) / BM;
+  const int num_qtiles = (Sq + 16 - 1) / 16;
   dim3 grid(bh, num_qtiles);
-  dim3 block(32, BM);
-  size_t shmem = (size_t)2 * BN * d * sizeof(__nv_bfloat16);
+  dim3 block(32);
+
+  size_t bf16_elems = (size_t)16 *d + 2*BN*d + 16*BN;
+  size_t float_elems = (size_t)16*BN + 16 + 16 + 16*d + 16*16;
+  size_t shmem = bf16_elems * 2 + float_elems * 4;
+
   if (shmem > 48 * 1024)
      cudaFuncSetAttribute(prefill_kernel,
                           cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem);
