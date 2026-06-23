@@ -40,7 +40,7 @@ def main():
         sec = bench_one(fused_attention, q, k, v)
         tflops, tbps = metrics(Sq, Skv, d, sec)
         regime = "decode" if Sq == 1 else "prefill"
-        rows.append([regime, Sq, Sjv, d, sec * 1e6, tflops, tbps])
+        rows.append([regime, Sq, Skv, d, sec * 1e6, tflops, tbps])
         print(f"{regime:8s} Sq={Sq:4d} Skv={Skv:5d} d={d:4d}    "
               f"{sec*1e6:8.1f} us   {tflops:7.2f} TFLOP/s  {tbps:6.2f} TB/s")
         with open("results/benchmark.csv", "w", newline="") as f:

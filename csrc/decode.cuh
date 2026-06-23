@@ -121,8 +121,6 @@ inline void launch_decode_attention(
   auto l_scratch    = at::empty({B, H, num_splits},    fopts);
   auto acc_scratch  = at::empty({B, H, num_splits, d}, fopts);
 
-  out.zero_();
-
   const auto* qp = reinterpret_cast<const __nv_bfloat16*>(q.data_ptr());
   const auto* kp = reinterpret_cast<const __nv_bfloat16*>(k.data_ptr());
   const auto* vp = reinterpret_cast<const __nv_bfloat16*>(v.data_ptr());
