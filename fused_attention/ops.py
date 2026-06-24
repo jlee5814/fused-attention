@@ -4,7 +4,7 @@ try:
     from . import _C
     _HAS_EXT = True
 
-except importError:
+except ImportError:
     _C = None
     _HAS_EXT = False
 

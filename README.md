@@ -1,6 +1,6 @@
 # Online Softmax + Scaled Dot-Product Attention
 
-Single-pass fused scaled dot-product attention that computes attention for a multi-head workload. This work handles both decode and prefill in a single kernel. Inputs are BF16. Accumulation is in FP32. Output is written as BF16. 
+Single-pass fused scaled dot-product attention that computes attention for a multi-head workload, dispatched to unique kernels for the decode and prefill phases since the two are bounded by different resources. Inputs are BF16. Accumulation is FP32. Output is BF16. 
 
 ## Environment
 

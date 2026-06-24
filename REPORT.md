@@ -14,7 +14,7 @@ I built a two-pass PyTorch reference first (scores materialized, then normalized
 
 Decode: one warp (32 threads) per (batch head, KV-split) block, grid (BH, 16). The 16 splits were chosen by sweep as the bandwidth optimum, with lanes mapped across the head dimension for coalesced KV loads.
 
-Prefill: one warp per 16-query-row tile, W=6 warps per block (32 W threads), grid (BH, [S_q/16]/W). The 16-row tile matches the 16x16x16 wmma shape; BLOCK_N=64 and W=6 were selected by sweep. W=6 maximizes occupancy within the A100’s 164 KB shared-memory budget, whereas W=8 would exceed it. Shared memory holds the reused K/V tile (loaded once per block, shared across warps) plus private per-warp softmax state.
+Prefill: one warp per 16-query-row tile, W=6 warps per block (32 W threads), grid (BH, [S_q/16]/W). The 16-row tile matches the 16x16x16 wmma shape; BLOCK_N=64 and W=6 were selected by sweep. W=6 is the largest warp count whose shared-memory footprint fits the A100’s 164 KB shared-memory budget, whereas W=8 would exceed it. Throughput rose incrementally up to that limit. Shared memory holds the reused K/V tile (loaded once per block, shared across warps) plus private per-warp softmax state.
 
 ### Debugging 
 
@@ -24,7 +24,7 @@ The dominant failure mode was silent correctness bugs that compile and run but c
 
 **Decode: split-KV**
 
-A single warp streaming the KV cache cannot generate enough outstanding memory requests to saturate HBM as bandwidth is only reached when many requests are in flight at once. Split-KV partitions the KV range across thread blocks. Each block computes a partial result (running max, sum, weighted-V) over its slice, and a second combine kernel merges the partials. This multiplies the number of concurrent load streams, hiding any single stream’s latency behind the others. A split-count sweep found a bandwidth optimum at 16 splits (0.05 -> 0.66 TB/s on 4096-key shape, 12x), plateauing at ~33% of peak.
+A single warp streaming the KV cache cannot generate enough outstanding memory requests to saturate HBM as bandwidth is only reached when many requests are in flight at once. Split-KV partitions the KV range across thread blocks. Each block computes a partial result (running max, sum, weighted-V) over its slice, and a second combine kernel merges the partials. This multiplies the number of concurrent load streams, hiding any single stream’s latency behind the others. A split-count sweep found a bandwidth optimum at 16 splits, improving the 4096-key shape ~12x (0.05 -> 0.58 TB/s), plateauing at ~29% of peak.
 
 **Prefill: tensor-core MMA with occupancy tuning**
 
@@ -40,23 +40,23 @@ All ten required shapes pass against the two-pass PyTorch reference within 1e-2 
 
 | S_q | S_kv | d | latency (µs) | TFLOP/s | TB/s |
 |----:|-----:|----:|-----:|-----:|-----:|
-| 1 | 512 | 64 | 58.6 | 0.29 | 0.29 |
-| 1 | 512 | 128 | 70.5 | 0.48 | 0.48 |
-| 1 | 2048 | 64 | 350.1 | 0.19 | 0.19 |
-| 1 | 2048 | 128 | 232.2 | 0.58 | 0.58 |
-| 1 | 4096 | 128 | 453.5 | 0.59 | 0.59 |
+| 1 | 512 | 64 | 68.6 | 0.24 | 0.24 |
+| 1 | 512 | 128 | 83.3 | 0.40 | 0.40 |
+| 1 | 2048 | 64 | 361.2 | 0.19 | 0.19 |
+| 1 | 2048 | 128 | 244.4 | 0.55 | 0.55 |
+| 1 | 4096 | 128 | 463.9 | 0.58 | 0.58 |
 
 **Chunked prefill (S_q << S_kv)**
 
 | S_q | S_kv | d | latency (µs) | TFLOP/s | TB/s |
 |----:|-----:|----:|-----:|-----:|-----:|
-| 64 | 1024 | 64 | 1779.7 | 1.21 | 0.02 |
-| 64 | 2048 | 128 | 5203.5 | 1.65 | 0.03 |
-| 128 | 2048 | 64 | 4297.1 | 2.00 | 0.02 |
-| 128 | 4096 | 128 | 14769.9 | 2.33 | 0.02 |
-| 256 | 4096 | 128 | 22662.0 | 3.03 | 0.01 |
+| 64 | 1024 | 64 | 1503.0 | 1.43 | 0.02 |
+| 64 | 2048 | 128 | 5183.7 | 1.66 | 0.03 |
+| 128 | 2048 | 64 | 4300.8 | 2.00 | 0.02 |
+| 128 | 4096 | 128 | 14760.7 | 2.33 | 0.02 |
+| 256 | 4096 | 128 | 22682.4 | 3.03 | 0.01 |
 
-Decode achieves up to 0.59 TB/s (~30% of the 2.0 TB/s HBM peak); the bandwidth split between d=128 (0.48-0.59 TB/s) and d=64 (0.19-0.29) indicates sub-128-bit per-thread loads. Prefill reaches 3.03 TFLOP/s at the largest shape after the tensor-core rewrite, with ~1% of the 312 TFLOP/s tensor-core ceiling, utilization-limited rather than throughput-limited. 
+Decode achieves up to 0.58 TB/s (~29% of the 2.0 TB/s HBM peak). Prefill reaches 3.03 TFLOP/s at the largest shape after the tensor-core rewrite, with ~1% of the 312 TFLOP/s tensor-core ceiling, utilization-limited rather than throughput-limited. 
 
 ## IV. Analysis
 
@@ -66,11 +66,11 @@ These are the two inference-serving phases: prefill processes the prompt to buil
 
 ### Roofline positioning
 
-The A100's ridge (2.0 TB/s vs 19.5 TFLOP/s FP32) is ~9.8 FLOP/byte. Decode at ~1 FLOP/byte sits far left, pinned against the bandwidth ceiling. Best achieved bandwidth is ~0.59 TB/s, which is only 30% of peak, confirming it is bandwidth-bound and under-utilizing the available bandwidth. Prefill sits right of the ridge (compute-bound) but reaches only 3.03 TFLOP/s, which is 15% of the CUDA-core ceiling and ~1% of the 312 TFLOP/s tensor-core ceiling. It’s limited by unit utilization, not available compute.
+The A100's ridge (2.0 TB/s vs 19.5 TFLOP/s FP32) is ~9.8 FLOP/byte. Decode at ~1 FLOP/byte sits far left, pinned against the bandwidth ceiling. Best achieved bandwidth is ~0.58 TB/s, which is only 29% of peak, confirming it is bandwidth-bound and under-utilizing the available bandwidth. Prefill sits right of the ridge (compute-bound) but reaches only 3.03 TFLOP/s, which is 15% of the CUDA-core ceiling and ~1% of the 312 TFLOP/s tensor-core ceiling. It’s limited by unit utilization, not available compute.
 
 ### Dominant bottlenecks
 
-The dominant bottleneck is memory bandwidth; with a single query there is no data reuse, so runtime is bounded by KV_bytes / achieved_bandwidth. Since the bytes moved are intrinsic, the only lever is raising achieved bandwidth toward the 2.0 TB/s ceiling. Two factors cap it. First, insufficient memory-level parallelism: a single warp streaming KV serially does not keep enough requests in flight (addressed by split-KV). Second, narrow memory transactions: d=64 hits 0.19 TB/s vs d=128’s 0.59 TB/s, indicating sub-128-bit loads.
+The dominant bottleneck is memory bandwidth; with a single query there is no data reuse, so runtime is bounded by KV_bytes / achieved_bandwidth. Since the bytes moved are intrinsic, the only lever is raising achieved bandwidth toward the 2.0 TB/s ceiling. Two factors cap it. First, insufficient memory-level parallelism: a single warp streaming KV serially does not keep enough requests in flight (addressed by split-KV). Second, narrow memory transactions: d=64 shapes only hit 0.19-0.24 TB/s vs d=128’s 0.40-0.58 TB/s, and at S_kv=2048, the d=64 case is slower in absolute latency (361 µs) than the larger d=128 (244 µs) despite moving half the data, indicating sub-128-bit loads. Vectorized 128-bit loads address this.
 
 ### Tiling strategy discussion
 
@@ -78,7 +78,7 @@ Both kernels tile over the KV sequence, but for opposite reasons dictated by the
 
 ### What would you improve with an additional day of work
 
-For decode, vectorized 128-bit loads (float4 / __half2): achieved bandwidth scales with d (0.19 TB/s at d=64 vs 0.59 at d=128), the signature of per-thread loads below the 128-bit transaction width, widening them targets the regime that matters most. For prefill, closing the tensor-core gap needs a smaller per-warp shared-memory footprint so prefetch and high occupancy coexist.
+For decode, vectorized 128-bit loads (float4 / __half2): achieved bandwidth scales with d (0.19 TB/s at d=64 vs 0.58 at d=128), the signature of per-thread loads below the 128-bit transaction width, widening them targets the regime that matters most. For prefill, closing the tensor-core gap needs a smaller per-warp shared-memory footprint so prefetch and high occupancy coexist.
 
 ## V. Attribution
 Tensor-core matmuls use NVIDIA’s wmma API (mma.h). Online-softmax follows Milakov & Gimelshein (2018). No cuBLAS, cuDNN, FlashAttention or high-level attention libraries were used.

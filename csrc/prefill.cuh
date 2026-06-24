@@ -100,7 +100,7 @@ __global__ void prefill_kernel(
                 l[r] = l_cur;
     
             }
-
+            __syncwarp();
             {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> p_frag;
                 wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::row_major> v_frag;

@@ -16,19 +16,21 @@ def bench_one(fn, q, k, v, warmup=10, iters=50):
     for _ in range(warmup):
         fn(q, k, v)
     torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
+    times_s = []
     for _ in range(iters):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
         fn(q, k, v)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / iters / 1e3
+        end.record()
+        torch.cuda.synchronize()
+        times_s.append(start.elapsed_time(end) / 1e3)
+    return min(times_s)
 
 def metrics(Sq, Skv, d, seconds):
-    # FLOPs: QK^T (2*Sq*Skv*d) + PV (2*Sq*Skv*d) = 4*Sq*Skv*d, per (batch, head).
-    flops = 4 * Sq * Skv * d * BATCH * HEADS 
-    bytes_moved =  2 * (Skv * d) * 2 * BATCH * HEADS
+    flops = 4 * Sq * Skv * d * BATCH * HEADS
+    elems = (Skv * d) + (Skv * d) + (Sq * d) + (Sq * d)
+    bytes_moved =  elems * 2 * BATCH * HEADS
     return flops / seconds / 1e12, bytes_moved / seconds / 1e12 
 
 def main():
@@ -43,11 +45,11 @@ def main():
         rows.append([regime, Sq, Skv, d, sec * 1e6, tflops, tbps])
         print(f"{regime:8s} Sq={Sq:4d} Skv={Skv:5d} d={d:4d}    "
               f"{sec*1e6:8.1f} us   {tflops:7.2f} TFLOP/s  {tbps:6.2f} TB/s")
-        with open("results/benchmark.csv", "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["regime", "S_q", "S_kv", "d", "us", "TFLOP_s", "TB_s"])
-            w.writerows(rows)
-        print("\nwrote results/benchmark.csv")
+    with open("results/benchmark.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["regime", "S_q", "S_kv", "d", "us", "TFLOP_s", "TB_s"])
+        w.writerows(rows)
+    print("\nwrote results/benchmark.csv")
 
 if __name__ == "__main__":
     main()
