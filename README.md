@@ -1,19 +1,29 @@
-# Fused Online-Softmax Attention
+# Online Softmax + Scaled Dot-Product Attention
 
-Single-pass fused scaled dot-product attention 
+Single-pass fused scaled dot-product attention that computes attention for a multi-head workload. This work handles both decode and prefill in a single kernel. Inputs are BF16. Accumulation is in FP32. Output is written as BF16. 
 
 ## Environment
+
 - GPU: NVIDIA A100-SXM4-80GB
 - Driver: 580.126.16
 - CUDA: 12.8
+- PyTorch: 2.8.0+cu128
 - Cloud: RunPod, A100 SXM pod
 
 ## Build
 
+```
 pip install -r requirements.txt
-pip install -e .
+pip install -e . --no-build-isolation
+```
 
-## Run 
-pytest
+## Run
+
+```
+pytest tests/ -q
 python -m bench.benchmark
+```
 
+## Attribution
+
+Tensor-core matmuls use NVIDIA’s wmma API (mma.h). Online-softmax follows Milakov & Gimelshein (2018). No cuBLAS, cuDNN, FlashAttention or high-level attention libraries were used.
